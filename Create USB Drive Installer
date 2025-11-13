@@ -1,5 +1,5 @@
 # ========== STEP 1: Define working folder structure ==========
-$BasePath = "D:\WinBuilder"  # Adjust this path as needed
+$BasePath = "E:\WinBuilder"  # Adjust this path as needed
 
 $Folders = @{
     ISO         = "$BasePath\ISO"
@@ -8,7 +8,7 @@ $Folders = @{
     TempWIM     = "$BasePath\TempWIM"
     Mounts      = "$BasePath\Mounts"
     Output      = "$BasePath\Output"
-    USB         = "E:"  # Adjust to your actual USB drive letter
+    USB         = "D:"  # Adjust to your actual USB drive letter
 }
 
 # Create working directories
