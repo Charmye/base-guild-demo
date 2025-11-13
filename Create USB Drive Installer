@@ -1,0 +1,88 @@
+# ========== STEP 1: Define working folder structure ==========
+$BasePath = "D:\WinBuilder"  # Adjust this path as needed
+
+$Folders = @{
+    ISO         = "$BasePath\ISO"
+    ISOMount    = "$BasePath\ISOMount"
+    Drivers     = "$BasePath\Drivers"
+    TempWIM     = "$BasePath\TempWIM"
+    Mounts      = "$BasePath\Mounts"
+    Output      = "$BasePath\Output"
+    USB         = "E:"  # Adjust to your actual USB drive letter
+}
+
+# Create working directories
+foreach ($folder in $Folders.Values) {
+    if (-not (Test-Path $folder)) {
+        New-Item -ItemType Directory -Path $folder | Out-Null
+    }
+}
+
+# ========== STEP 2-1: Select ISO file ==========
+$IsoPath = (Get-Item (Read-Host "Enter full path to Windows ISO file")).FullName
+
+# ========== STEP 2-2: Mount ISO ==========
+Mount-DiskImage -ImagePath $IsoPath
+$MountedISO = Get-Volume | Where-Object { $_.DriveType -eq 'CD-ROM' -and $_.FileSystemLabel -like '*CCCOMA*' }
+$ISODrive = "$($MountedISO.DriveLetter):"
+
+# ========== STEP 2-3: Configure USB Disk (manual or choose FAT32/NTFS volume) ==========
+$USBVolume = Get-Volume | Where-Object { $_.DriveType -eq 'Removable' -or $_.DriveType -eq 'Fixed' } |
+    Out-GridView -Title "Select USB Target Drive" -PassThru
+$USBDrive = "$($USBVolume.DriveLetter):"
+
+# ========== STEP 2-4: Copy ISO Files to USB, excluding boot/install.wim ==========
+Copy-Item -Path "$ISODrive\*" -Destination $USBDrive -Recurse -Force -Exclude "boot.wim", "install.wim"
+
+# ========== STEP 2-5: Copy boot/install.wim to working temp ==========
+Copy-Item "$ISODrive\sources\boot.wim" -Destination "$($Folders.TempWIM)\boot.wim" -Force
+Copy-Item "$ISODrive\sources\install.wim" -Destination "$($Folders.TempWIM)\install.wim" -Force
+
+# ========== STEP 2-6: Mount install.wim and extract winre.wim ==========
+$MountInstall = "$($Folders.Mounts)\Install"
+Dism /Mount-Wim /WimFile:"$($Folders.TempWIM)\install.wim" /Index:1 /MountDir:"$MountInstall"
+Copy-Item "$MountInstall\Windows\System32\Recovery\winre.wim" -Destination "$($Folders.TempWIM)\winre.wim" -Force
+
+# ========== STEP 2-7: Inject drivers to install.wim ==========
+Dism /Image:"$MountInstall" /Add-Driver /Driver:"$($Folders.Drivers)" /Recurse
+Dism /Unmount-Wim /MountDir:"$MountInstall" /Commit
+
+# ========== STEP 2-8: Mount winre.wim and inject drivers ==========
+$MountWinRE = "$($Folders.Mounts)\WinRE"
+Dism /Mount-Wim /WimFile:"$($Folders.TempWIM)\winre.wim" /Index:1 /MountDir:"$MountWinRE"
+Dism /Image:"$MountWinRE" /Add-Driver /Driver:"$($Folders.Drivers)" /Recurse
+
+# ========== STEP 2-9: Copy back winre.wim to original folder ==========
+Copy-Item "$MountWinRE\*" -Destination "$MountInstall\Windows\System32\Recovery\winre.wim" -Force
+
+# ========== STEP 2-10: Unmount winre.wim ==========
+Dism /Unmount-Wim /MountDir:"$MountWinRE" /Commit
+
+# ========== STEP 2-11: Mount boot.wim Index 2 ==========
+$MountBoot = "$($Folders.Mounts)\Boot"
+Dism /Mount-Wim /WimFile:"$($Folders.TempWIM)\boot.wim" /Index:2 /MountDir:"$MountBoot"
+
+# ========== STEP 2-12: Inject drivers to boot.wim ==========
+Dism /Image:"$MountBoot" /Add-Driver /Driver:"$($Folders.Drivers)" /Recurse
+
+# ========== STEP 2-13: Unmount boot.wim ==========
+Dism /Unmount-Wim /MountDir:"$MountBoot" /Commit
+
+# ========== STEP 2-14: Export optimized images ==========
+Dism /Export-Image /SourceImageFile:"$($Folders.TempWIM)\install.wim" /SourceIndex:1 /DestinationImageFile:"$($Folders.Output)\install.wim"
+Dism /Export-Image /SourceImageFile:"$($Folders.TempWIM)\boot.wim" /SourceIndex:2 /DestinationImageFile:"$($Folders.Output)\boot.wim"
+
+# ========== STEP 2-15: Copy images to USB (split if necessary) ==========
+$USBSourceFolder = "$USBDrive\sources"
+if (-not (Test-Path $USBSourceFolder)) { New-Item -ItemType Directory -Path $USBSourceFolder | Out-Null }
+
+$FinalInstall = "$($Folders.Output)\install.wim"
+if ((Get-Item $FinalInstall).Length -gt 4GB) {
+    Dism /Split-Image /ImageFile:"$FinalInstall" /SWMFile:"$USBSourceFolder\install.swm" /FileSize:3800
+} else {
+    Copy-Item "$FinalInstall" "$USBSourceFolder\install.wim"
+}
+
+Copy-Item "$($Folders.Output)\boot.wim" "$USBSourceFolder\boot.wim"
+
+Write-Host "✔️ Windows USB customization complete!" -ForegroundColor Green
